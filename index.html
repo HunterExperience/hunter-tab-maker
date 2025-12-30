@@ -1,0 +1,75 @@
+
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hunter Tab Maker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              background: '#2D2B55',
+              bgDark: '#1E1E3F',
+              foreground: '#A599E9',
+              hoverBg: '#4D21FC',
+              contrast: '#d8dee9',
+              contrastLite: '#e5e9f0',
+              contrastLite2: '#eceff4',
+              highlight: '#FF7200',
+              comment: '#B362FF',
+              constants: '#FF628C',
+              keywords: '#FF9D00',
+              other: '#9EFFFF',
+              strings: '#A5FF90',
+              templates: '#3AD900',
+              definitions: '#FB94FF',
+              invalid: '#EC3A37F5',
+            },
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        background-color: #2D2B55;
+        color: #A599E9;
+        scrollbar-width: thin;
+        scrollbar-color: #4D21FC #1E1E3F;
+      }
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #1E1E3F;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #4D21FC;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #d8dee9;
+      }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/"
+  }
+}
+</script>
+</head>
+<body>
+    <div id="root"></div>
+</body>
+</html>
