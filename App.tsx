@@ -1,27 +1,29 @@
 
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import Fretboard from './components/Fretboard';
 import TabEditor from './components/TabEditor';
 import { TabBlock, TabColumn, TabNote } from './types';
 import { SYMBOLS, ICONS, STRING_NAMES, NOTES, SCALES } from './constants';
 
-const INITIAL_COLS = 40;
-const HISTORY_LIMIT = 15;
+const INITIAL_COLS = 60;
+const HISTORY_LIMIT = 20;
 
 const App: React.FC = () => {
+  const [songInfo, setSongInfo] = useState({ title: "", artist: "" });
   const [blocks, setBlocks] = useState<TabBlock[]>([
     { id: crypto.randomUUID(), columns: Array.from({ length: INITIAL_COLS }, () => Array(6).fill(null)), cursorPosition: 0, title: "" }
   ]);
   const [activeBlockIndex, setActiveBlockIndex] = useState(0);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [lastStringIndex, setLastStringIndex] = useState(0);
   const [selection, setSelection] = useState<[number, number] | null>(null);
-  const [clipboard, setClipboard] = useState<TabColumn[] | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isFretboardVisible, setIsFretboardVisible] = useState(true);
   
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
   
-  const [tabFontSize, setTabFontSize] = useState(14);
+  const [tabFontSize, setTabFontSize] = useState(12);
   const [selectedKey, setSelectedKey] = useState(4); 
   const [selectedScaleIndex, setSelectedScaleIndex] = useState(-1);
 
@@ -36,38 +38,14 @@ const App: React.FC = () => {
   }, [selectedKey, selectedScaleIndex]);
 
   const saveState = useCallback((currentBlocks: TabBlock[]) => {
-    const stateString = JSON.stringify(currentBlocks);
+    const stateString = JSON.stringify({ blocks: currentBlocks, songInfo });
     setHistory(prev => {
       const next = [...prev, stateString];
       if (next.length > HISTORY_LIMIT) return next.slice(1);
       return next;
     });
     setRedoStack([]); 
-  }, []);
-
-  const handleUndo = () => {
-    if (history.length > 0) {
-      const currentState = JSON.stringify(blocks);
-      const prevStateString = history[history.length - 1];
-      setRedoStack(prev => [...prev, currentState]);
-      const restored = JSON.parse(prevStateString);
-      setBlocks(restored);
-      setHistory(history.slice(0, -1));
-      if (activeBlockIndex >= restored.length) {
-        setActiveBlockIndex(Math.max(0, restored.length - 1));
-      }
-    }
-  };
-
-  const handleRedo = () => {
-    if (redoStack.length > 0) {
-      const currentState = JSON.stringify(blocks);
-      const nextStateString = redoStack[redoStack.length - 1];
-      setHistory(prev => [...prev, currentState]);
-      setBlocks(JSON.parse(nextStateString));
-      setRedoStack(redoStack.slice(0, -1));
-    }
-  };
+  }, [songInfo]);
 
   const updateActiveBlock = useCallback((updater: (block: TabBlock) => TabBlock) => {
     saveState(blocks);
@@ -90,61 +68,126 @@ const App: React.FC = () => {
     const input = e.currentTarget;
     const rect = input.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
-    
-    // Medição aproximada de caractere mono para fonte 14px (~8.4px por caractere)
-    const charWidth = 8.41; 
+    const charWidth = (tabFontSize * 0.6); 
     const targetIdx = Math.floor(clickX / charWidth);
-    
     const currentTitle = blocks[index].title || "";
     if (currentTitle.length < targetIdx) {
-      // Preenche com espaços até onde o usuário clicou
       const paddedTitle = currentTitle.padEnd(targetIdx, " ");
       handleTitleChange(index, paddedTitle);
-      
-      // Força o cursor para o final após a renderização
       setTimeout(() => {
+        input.focus();
         input.setSelectionRange(targetIdx, targetIdx);
       }, 0);
     }
   };
 
-  const addNote = useCallback((stringIndex: number, fretValue: string, autoAdvance = true) => {
+  const addNote = useCallback((stringIndex: number, fretValue: string, isFromFretboard: boolean = false) => {
     setLastStringIndex(stringIndex);
     updateActiveBlock(block => {
       const newCols = [...block.columns];
-      if (block.cursorPosition >= newCols.length - 1) {
+      const colIdx = block.cursorPosition;
+      if (colIdx >= newCols.length) {
         newCols.push(Array(6).fill(null));
       }
-      const newCol = [...newCols[block.cursorPosition]];
-      newCol[stringIndex] = { fret: fretValue };
-      newCols[block.cursorPosition] = newCol;
-      return { ...block, columns: newCols, cursorPosition: autoAdvance ? block.cursorPosition + 1 : block.cursorPosition };
+      const newCol = [...newCols[colIdx]];
+      const currentNote = newCol[stringIndex];
+      
+      let finalValue = fretValue;
+      let shouldAdvance = isFromFretboard;
+
+      if (!isFromFretboard) {
+        if (currentNote && !isNaN(Number(currentNote.fret)) && !isNaN(Number(fretValue))) {
+           const combined = currentNote.fret + fretValue;
+           if (Number(combined) <= 24) {
+             finalValue = combined;
+             shouldAdvance = true; 
+           } else {
+             finalValue = fretValue;
+           }
+        }
+      }
+
+      newCol[stringIndex] = { fret: finalValue };
+      newCols[colIdx] = newCol;
+
+      return { 
+        ...block, 
+        columns: newCols, 
+        cursorPosition: shouldAdvance ? block.cursorPosition + 1 : block.cursorPosition 
+      };
     });
   }, [updateActiveBlock]);
 
-  const transpose = (delta: number) => {
-    let canTranspose = true;
-    blocks.forEach(block => {
-      block.columns.forEach(col => {
-        col.forEach(note => {
-          if (note && !isNaN(parseInt(note.fret))) {
-            if (parseInt(note.fret) + delta < 0) canTranspose = false;
-          }
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (document.activeElement?.tagName === 'INPUT') return;
+
+      if (e.key >= '0' && e.key <= '9') {
+        e.preventDefault();
+        addNote(lastStringIndex, e.key, false);
+      } else if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        updateActiveBlock(block => {
+          const newCols = [...block.columns];
+          const newCol = [...newCols[block.cursorPosition]];
+          newCol[lastStringIndex] = null;
+          newCols[block.cursorPosition] = newCol;
+          return { ...block, columns: newCols };
         });
-      });
-    });
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        updateActiveBlock(b => ({...b, cursorPosition: Math.max(0, b.cursorPosition - 1)}));
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        updateActiveBlock(b => ({...b, cursorPosition: b.cursorPosition + 1}));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setLastStringIndex(s => Math.max(0, s - 1));
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setLastStringIndex(s => Math.min(5, s + 1));
+      } else if (e.ctrlKey && e.key === 'z') {
+        e.preventDefault();
+        handleUndo();
+      }
+    };
 
-    if (!canTranspose) {
-      alert("A transposição não pode ser realizada abaixo da corda solta.");
-      return;
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [lastStringIndex, activeBlockIndex, blocks, addNote, updateActiveBlock]);
+
+  const handleUndo = () => {
+    if (history.length > 0) {
+      const currentState = JSON.stringify({ blocks, songInfo });
+      const prevStateString = history[history.length - 1];
+      const prevState = JSON.parse(prevStateString);
+      setRedoStack(prev => [...prev, currentState]);
+      setBlocks(prevState.blocks);
+      setSongInfo(prevState.songInfo);
+      setHistory(history.slice(0, -1));
     }
+  };
 
+  const handleRedo = () => {
+    if (redoStack.length > 0) {
+      const currentState = JSON.stringify({ blocks, songInfo });
+      const nextStateString = redoStack[redoStack.length - 1];
+      const nextState = JSON.parse(nextStateString);
+      setHistory(prev => [...prev, currentState]);
+      setBlocks(nextState.blocks);
+      setSongInfo(nextState.songInfo);
+      setRedoStack(redoStack.slice(0, -1));
+    }
+  };
+
+  const transpose = (delta: number) => {
     saveState(blocks);
     setBlocks(blocks.map(block => ({
       ...block,
       columns: block.columns.map(col => col.map(note => {
         if (note && !isNaN(parseInt(note.fret))) {
-          return { ...note, fret: (parseInt(note.fret) + delta).toString() };
+          const newVal = parseInt(note.fret) + delta;
+          return newVal >= 0 && newVal <= 24 ? { ...note, fret: newVal.toString() } : note;
         }
         return note;
       }))
@@ -154,106 +197,17 @@ const App: React.FC = () => {
   const insertBarLine = () => {
     updateActiveBlock(block => {
       const newCols = [...block.columns];
-      if (block.cursorPosition >= newCols.length - 1) newCols.push(Array(6).fill(null));
       newCols[block.cursorPosition] = Array(6).fill({ fret: '|' });
       return { ...block, columns: newCols, cursorPosition: block.cursorPosition + 1 };
     });
   };
 
-  const insertSpace = () => {
-    updateActiveBlock(block => {
-      const newCols = [...block.columns];
-      const insertPos = selection ? selection[0] : block.cursorPosition;
-      newCols.splice(insertPos, 0, Array(6).fill(null));
-      return { ...block, columns: newCols, cursorPosition: selection ? block.cursorPosition : block.cursorPosition + 1 };
-    });
-  };
-
-  const handleCopy = () => {
-    if (!selection) return;
-    const block = blocks[activeBlockIndex];
-    const range = block.columns.slice(selection[0], selection[1] + 1);
-    setClipboard(JSON.parse(JSON.stringify(range)));
-  };
-
-  const handleCut = () => {
-    if (!selection) return;
-    handleCopy();
-    updateActiveBlock(block => {
-      const newCols = [...block.columns];
-      for (let i = selection[0]; i <= selection[1]; i++) {
-        newCols[i] = Array(6).fill(null);
-      }
-      return { ...block, columns: newCols };
-    });
-    setSelection(null);
-  };
-
-  const handlePaste = () => {
-    if (!clipboard) return;
-    updateActiveBlock(block => {
-      const newCols = [...block.columns];
-      newCols.splice(block.cursorPosition, 0, ...clipboard);
-      return { ...block, columns: newCols, cursorPosition: block.cursorPosition + clipboard.length };
-    });
-    setSelection(null);
-  };
-
-  const addBlockBelow = () => {
-    saveState(blocks);
-    const newBlock: TabBlock = {
-      id: crypto.randomUUID(),
-      columns: Array.from({ length: INITIAL_COLS }, () => Array(6).fill(null)),
-      cursorPosition: 0,
-      title: ""
-    };
-    const nextBlocks = [...blocks];
-    nextBlocks.splice(activeBlockIndex + 1, 0, newBlock);
-    setBlocks(nextBlocks);
-    setActiveBlockIndex(activeBlockIndex + 1);
-  };
-
-  const duplicateBlock = (index: number) => {
-    saveState(blocks);
-    const blockToCopy = blocks[index];
-    const newBlock: TabBlock = {
-      ...blockToCopy,
-      id: crypto.randomUUID(),
-      columns: JSON.parse(JSON.stringify(blockToCopy.columns)),
-      title: blockToCopy.title ? `${blockToCopy.title} (Cópia)` : ""
-    };
-    const nextBlocks = [...blocks];
-    nextBlocks.splice(index + 1, 0, newBlock);
-    setBlocks(nextBlocks);
-    setActiveBlockIndex(index + 1);
-  };
-
-  const moveBlock = (index: number, direction: 'up' | 'down') => {
-    if ((direction === 'up' && index === 0) || (direction === 'down' && index === blocks.length - 1)) return;
-    saveState(blocks);
-    const nextBlocks = [...blocks];
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    [nextBlocks[index], nextBlocks[targetIndex]] = [nextBlocks[targetIndex], nextBlocks[index]];
-    setBlocks(nextBlocks);
-    setActiveBlockIndex(targetIndex);
-  };
-
-  const removeSelectedBlock = () => {
-    if (blocks.length <= 1) return;
-    if (window.confirm('Excluir esta parte selecionada da tablatura?')) {
-      saveState(blocks);
-      const nextBlocks = blocks.filter((_, i) => i !== activeBlockIndex);
-      setBlocks(nextBlocks);
-      setActiveBlockIndex(Math.max(0, activeBlockIndex - 1));
-    }
-  };
-
   const handleClearAll = () => {
-    if (window.confirm('Limpar todas as tablaturas? Isso removerá todas as partes.')) {
+    if (window.confirm('Limpar todas as tablaturas?')) {
       saveState(blocks);
       setBlocks([{ id: crypto.randomUUID(), columns: Array.from({ length: INITIAL_COLS }, () => Array(6).fill(null)), cursorPosition: 0, title: "" }]);
+      setSongInfo({ title: "", artist: "" });
       setActiveBlockIndex(0);
-      setSelection(null);
     }
   };
 
@@ -268,39 +222,71 @@ const App: React.FC = () => {
       let currentPartCols: TabColumn[] = [];
       let currentTitle = "";
       let stringsFound = 0;
+      let importedSongInfo = { title: "", artist: "" };
+      
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        if (line.startsWith('Título Música:')) {
+          importedSongInfo.title = line.replace('Título Música:', '').trim();
+          continue;
+        }
+        if (line.startsWith('Artista:')) {
+          importedSongInfo.artist = line.replace('Artista:', '').trim();
+          continue;
+        }
         if (line.startsWith('Parte')) { 
           stringsFound = 0; 
           currentPartCols = []; 
-          currentTitle = "";
+          continue;
         }
         if (line.startsWith('Título:')) {
           currentTitle = line.replace('Título:', '').trim();
+          continue;
         }
         const match = line.match(/^([eBGDAE])\s\|\s*(.*)$/);
         if (match) {
           const stringIdx = STRING_NAMES.indexOf(match[1] as any);
           const tabContent = match[2];
+          // Cada nota ocupa 2 caracteres (número ou símbolo + traço/espaço)
           const numCols = Math.floor(tabContent.length / 2);
-          if (currentPartCols.length === 0) currentPartCols = Array.from({ length: numCols }, () => Array(6).fill(null));
+          if (currentPartCols.length === 0) {
+            currentPartCols = Array.from({ length: numCols }, () => Array(6).fill(null));
+          }
           for (let c = 0; c < numCols; c++) {
             let chunk = tabContent.substring(c * 2, c * 2 + 2).trim().replace(/-/g, '');
-            if (chunk !== "") currentPartCols[c][stringIdx] = { fret: chunk };
+            if (chunk !== "") {
+              currentPartCols[c][stringIdx] = { fret: chunk };
+            }
           }
           stringsFound++;
-          if (stringsFound === 6) newBlocks.push({ id: crypto.randomUUID(), columns: currentPartCols, cursorPosition: 0, title: currentTitle });
+          if (stringsFound === 6) {
+            newBlocks.push({ 
+              id: crypto.randomUUID(), 
+              columns: currentPartCols, 
+              cursorPosition: 0, 
+              title: currentTitle 
+            });
+            currentTitle = "";
+          }
         }
       }
-      if (newBlocks.length > 0) { saveState(blocks); setBlocks(newBlocks); setActiveBlockIndex(0); }
-      else alert("Arquivo inválido.");
+      if (newBlocks.length > 0) { 
+        saveState(blocks); 
+        setBlocks(newBlocks); 
+        setSongInfo(importedSongInfo);
+        setActiveBlockIndex(0); 
+      }
     };
     reader.readAsText(file);
     e.target.value = "";
   };
 
   const exportTab = () => {
-    let output = "Hunter Tab Maker - Composição\n\n";
+    let output = "Hunter Tab Maker - Composição\n";
+    if (songInfo.title) output += `Título Música: ${songInfo.title}\n`;
+    if (songInfo.artist) output += `Artista: ${songInfo.artist}\n`;
+    output += "\n";
+    
     blocks.forEach((block, bIdx) => {
       output += `Parte ${bIdx + 1}\n`;
       if (block.title) output += `Título: ${block.title}\n`;
@@ -314,181 +300,182 @@ const App: React.FC = () => {
       }
       output += "\n";
     });
+
     const element = document.createElement("a");
     const file = new Blob([output], { type: 'text/plain' });
+    
+    // Define o nome do arquivo baseado no título da música, ou fallback se vazio
+    const sanitizedTitle = songInfo.title.trim().replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const fileName = sanitizedTitle ? `${sanitizedTitle}.txt` : "hunter_tab.txt";
+    
     element.href = URL.createObjectURL(file);
-    element.download = "hunter_tab.txt";
-    document.body.appendChild(element);
+    element.download = fileName;
     element.click();
-    document.body.removeChild(element);
   };
 
   return (
-    <div className="min-h-screen flex flex-col font-sans p-4 md:p-8 bg-background">
+    <div className="min-h-screen flex flex-col font-sans p-4 md:p-8 bg-background pb-40">
       <header className="max-w-7xl mx-auto w-full mb-8 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold text-contrast flex items-center gap-2">
-            <span className="bg-[#bf616a] text-background px-2 py-1 rounded">Hunter</span> Tab Maker 🪶
-          </h1>
-        </div>
+        <h1 className="text-3xl font-bold text-contrast flex items-center gap-2">
+          <span className="bg-[#bf616a] text-background px-2 py-1 rounded">Hunter</span> Tab Maker 🪶
+        </h1>
         
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 bg-bgDark rounded-lg p-1 border border-foreground/20 mr-2">
-            <button onClick={() => transpose(1)} className="px-3 py-1 bg-background hover:bg-contrast hover:text-background text-contrast font-bold rounded transition-colors border border-foreground/10">+</button>
+          <div className="flex items-center gap-1 bg-bgDark rounded-lg p-1 border border-foreground/20">
+            <button onClick={() => transpose(1)} className="px-3 py-1 bg-background hover:bg-contrast hover:text-background text-contrast font-bold rounded border border-foreground/10">+</button>
             <span className="px-1 text-[10px] text-foreground font-bold uppercase">Tom</span>
-            <button onClick={() => transpose(-1)} className="px-3 py-1 bg-background hover:bg-contrast hover:text-background text-contrast font-bold rounded transition-colors border border-foreground/10">-</button>
+            <button onClick={() => transpose(-1)} className="px-3 py-1 bg-background hover:bg-contrast hover:text-background text-contrast font-bold rounded border border-foreground/10">-</button>
           </div>
 
-          <div className="flex items-center gap-1 bg-bgDark rounded-lg p-1 border border-foreground/20 mr-2">
-            <button onClick={() => setTabFontSize(s => Math.max(10, s - 2))} className="p-1.5 bg-background hover:bg-contrast hover:text-background rounded text-contrast border border-foreground/10"><ICONS.Minimize /></button>
+          <div className="flex items-center gap-1 bg-bgDark rounded-lg p-1 border border-foreground/20">
+            <button onClick={() => setTabFontSize(s => Math.max(8, s - 1))} className="p-1.5 bg-background hover:bg-contrast rounded text-contrast"><ICONS.Minimize /></button>
             <span className="px-1 text-[10px] text-foreground font-bold uppercase">Fonte</span>
-            <button onClick={() => setTabFontSize(s => Math.min(32, s + 2))} className="p-1.5 bg-background hover:bg-contrast hover:text-background rounded text-contrast border border-foreground/10"><ICONS.Maximize /></button>
+            <button onClick={() => setTabFontSize(s => Math.min(24, s + 1))} className="p-1.5 bg-background hover:bg-contrast rounded text-contrast"><ICONS.Maximize /></button>
           </div>
 
-          <div className="flex items-center gap-1 bg-bgDark p-1 rounded-lg border border-foreground/20 mr-2">
-            <button onClick={handleUndo} disabled={history.length === 0} className="p-1.5 bg-background hover:bg-contrast hover:text-background disabled:opacity-20 text-contrast rounded transition-colors border border-foreground/10"><ICONS.Undo /></button>
-            <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-1.5 bg-background hover:bg-contrast hover:text-background disabled:opacity-20 text-contrast rounded transition-colors border border-foreground/10"><ICONS.Redo /></button>
+          <div className="flex items-center gap-1 bg-bgDark p-1 rounded-lg border border-foreground/20">
+            <button onClick={handleUndo} disabled={history.length === 0} className="p-1.5 bg-background hover:bg-contrast disabled:opacity-20 text-contrast rounded"><ICONS.Undo /></button>
+            <button onClick={handleRedo} disabled={redoStack.length === 0} className="p-1.5 bg-background hover:bg-contrast disabled:opacity-20 text-contrast rounded"><ICONS.Redo /></button>
           </div>
 
           <input type="file" ref={fileInputRef} onChange={handleImport} accept=".txt" className="hidden" />
-          <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-4 py-2 bg-strings hover:bg-contrast hover:text-background text-background rounded-lg transition-colors font-bold shadow-md">Importar</button>
-          <button onClick={exportTab} className="flex items-center gap-2 px-4 py-2 bg-definitions hover:bg-contrast hover:text-background text-background rounded-lg transition-colors font-bold shadow-lg">Exportar</button>
+          <button onClick={() => fileInputRef.current?.click()} className="px-4 py-2 bg-strings hover:bg-contrast hover:text-background text-background rounded-lg transition-colors font-bold shadow-md">Importar</button>
+          <button onClick={exportTab} className="px-4 py-2 bg-definitions hover:bg-contrast hover:text-background text-background rounded-lg transition-colors font-bold shadow-lg">Exportar</button>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto w-full space-y-8 flex-1 pb-20">
-        <section className="bg-bgDark p-4 rounded-xl border border-foreground/10 flex flex-wrap items-end gap-6 shadow-sm">
-           <div className="flex flex-col gap-2">
-              <label className="text-xs font-bold text-foreground uppercase tracking-wider">Tom de Referência</label>
-              <div className="flex flex-wrap gap-1">
-                {NOTES.map((note, idx) => (
-                  <button key={note} onClick={() => setSelectedKey(idx)} className={`px-3 py-1.5 text-xs font-bold rounded transition-all border ${selectedKey === idx ? 'bg-contrast text-background border-contrast' : 'bg-background text-foreground border-foreground/20 hover:border-contrast'}`}>{note}</button>
-                ))}
+      <main className="max-w-7xl mx-auto w-full space-y-4 flex-1">
+        <section className="bg-bgDark p-5 rounded-xl border border-foreground/10 flex flex-wrap items-center gap-8 shadow-sm">
+           <div className="flex items-center gap-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-foreground/50 uppercase">TOM</label>
+                <select className="bg-background text-contrast border border-foreground/20 rounded px-2 py-1 outline-none text-xs font-bold h-[30px]" value={selectedKey} onChange={(e) => setSelectedKey(parseInt(e.target.value))}>
+                  {NOTES.map((note, idx) => <option key={note} value={idx}>{note}</option>)}
+                </select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-bold text-foreground/50 uppercase">Escala</label>
+                <select className="bg-background text-contrast border border-foreground/20 rounded px-2 py-1 outline-none text-xs font-bold h-[30px]" value={selectedScaleIndex} onChange={(e) => setSelectedScaleIndex(parseInt(e.target.value))}>
+                  <option value="-1">Nenhuma</option>
+                  {SCALES.map((scale, idx) => <option key={scale.name} value={idx}>{scale.name}</option>)}
+                </select>
               </div>
            </div>
-           <div className="flex flex-col gap-2 flex-1 min-w-[200px]">
-              <label className="text-xs font-bold text-foreground uppercase tracking-wider">Escala</label>
-              <select className="bg-background text-foreground border border-foreground/20 rounded-lg px-3 py-1.5 outline-none focus:border-contrast text-sm h-[32px]" value={selectedScaleIndex} onChange={(e) => setSelectedScaleIndex(parseInt(e.target.value))}>
-                <option value="-1">Nenhuma Selecionada</option>
-                {SCALES.map((scale, idx) => <option key={scale.name} value={idx}>{scale.name}</option>)}
-              </select>
+
+           <div className="h-10 w-[1px] bg-foreground/10 hidden md:block" />
+
+           <div className="flex flex-col gap-1">
+              <label className="text-[10px] font-bold text-foreground/50 uppercase">Técnicas</label>
+              <div className="flex gap-1.5">
+                {SYMBOLS.map(s => (
+                  <button key={s.label} onClick={() => addNote(lastStringIndex, s.label, true)} className="w-8 h-8 flex items-center justify-center bg-background hover:bg-contrast hover:text-background text-foreground rounded border border-foreground/10 transition-all font-bold text-sm">{s.label}</button>
+                ))}
+                <button onClick={insertBarLine} className="w-8 h-8 flex items-center justify-center bg-background hover:bg-contrast hover:text-background text-foreground rounded border border-foreground/10 font-bold text-sm">|</button>
+              </div>
            </div>
-           <button onClick={handleClearAll} className="px-4 h-[32px] bg-[#bf616a]/10 hover:bg-[#bf616a] hover:text-background text-[#bf616a] rounded-lg transition-colors font-bold border border-[#bf616a]/30 text-xs flex items-center">Limpar Tudo</button>
+
+           <div className="ml-auto">
+              <button onClick={handleClearAll} className="px-4 py-2 bg-[#bf616a]/10 hover:bg-[#bf616a] hover:text-background text-[#bf616a] rounded transition-colors font-bold border border-[#bf616a]/30 text-[10px] uppercase">Limpar Tudo</button>
+           </div>
+        </section>
+
+        {/* Global Song Info Section */}
+        <section className="px-8 space-y-4">
+           <div className="flex flex-col md:flex-row gap-8">
+              <input 
+                type="text" 
+                placeholder="Título da Música..." 
+                value={songInfo.title}
+                onChange={(e) => setSongInfo(prev => ({ ...prev, title: e.target.value }))}
+                style={{ fontSize: `${tabFontSize}px` }}
+                className="flex-1 bg-transparent border-b border-foreground/10 focus:border-contrast/30 text-contrast font-bold py-1 outline-none placeholder:text-foreground/20 font-mono"
+              />
+              <input 
+                type="text" 
+                placeholder="Artista / Outras informações..." 
+                value={songInfo.artist}
+                onChange={(e) => setSongInfo(prev => ({ ...prev, artist: e.target.value }))}
+                style={{ fontSize: `${tabFontSize}px` }}
+                className="flex-1 bg-transparent border-b border-foreground/10 focus:border-contrast/30 text-contrast font-bold py-1 outline-none placeholder:text-foreground/20 font-mono"
+              />
+           </div>
         </section>
 
         <section className="space-y-6">
-          <div className="flex items-center justify-between mb-2">
-             <span className="text-sm font-bold text-foreground uppercase tracking-widest">Partes da Composição</span>
-             <button onClick={removeSelectedBlock} className="flex items-center gap-2 px-3 py-1 bg-[#bf616a] hover:bg-contrast hover:text-background text-background rounded text-xs font-bold transition-all shadow-md">
-               <ICONS.Delete width="14" height="14" /> Excluir Parte Selecionada
-             </button>
-          </div>
-          
-          <div className="space-y-4">
-            {blocks.map((block, index) => (
+          {blocks.map((block, index) => {
+            const isHovered = hoveredIndex === index;
+            return (
               <div 
                 key={block.id} 
-                className={`p-4 rounded-xl transition-all cursor-pointer ${activeBlockIndex === index ? 'bg-bgDark shadow-2xl' : 'bg-bgDark/40 hover:bg-bgDark/60 shadow-sm'}`} 
+                onMouseEnter={() => setHoveredIndex(index)}
+                onMouseLeave={() => setHoveredIndex(null)}
+                className={`p-4 rounded-xl transition-all ${isHovered ? 'bg-bgDark ring-1 ring-contrast/20 shadow-xl' : (activeBlockIndex === index ? 'bg-bgDark/60' : 'bg-bgDark/40')}`}
                 onClick={() => setActiveBlockIndex(index)}
               >
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-4">
-                    <span className={`text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-tighter ${activeBlockIndex === index ? 'bg-contrast text-background' : 'bg-background text-foreground'}`}>P{index + 1}</span>
-                    <div className="flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                       <button onClick={() => moveBlock(index, 'up')} title="Mover para Cima" className="p-1 bg-background hover:bg-contrast rounded text-contrast disabled:opacity-10 border border-foreground/10" disabled={index === 0}><ICONS.ArrowUp width="14" height="14" /></button>
-                       <button onClick={() => moveBlock(index, 'down')} title="Mover para Baixo" className="p-1 bg-background hover:bg-contrast rounded text-contrast disabled:opacity-10 border border-foreground/10" disabled={index === blocks.length - 1}><ICONS.ArrowDown width="14" height="14" /></button>
-                       <button onClick={() => duplicateBlock(index)} title="Duplicar Parte" className="p-1 bg-background hover:bg-contrast rounded text-contrast border border-foreground/10 ml-2"><ICONS.Duplicate width="14" height="14" /></button>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                     <button onClick={() => updateActiveBlock(b => ({...b, cursorPosition: Math.max(0, b.cursorPosition - 1)}))} className="p-1 bg-background hover:bg-contrast rounded text-contrast border border-foreground/10"><ICONS.ChevronLeft width="16" height="16" /></button>
-                     <span className="font-mono text-contrast text-[11px] font-bold w-12 text-center">COL {block.cursorPosition + 1}</span>
-                     <button onClick={() => updateActiveBlock(b => ({...b, cursorPosition: b.cursorPosition + 1}))} className="p-1 bg-background hover:bg-contrast rounded text-contrast border border-foreground/10"><ICONS.ChevronRight width="16" height="16" /></button>
-                  </div>
-                </div>
-
-                <div className="mb-2 px-8" onClick={e => e.stopPropagation()}>
-                  <input 
-                    type="text" 
-                    placeholder="Clique aqui para inserir texto explicativo..." 
-                    value={block.title || ""} 
-                    onMouseDown={(e) => handleTitleClick(e, index)}
-                    onChange={(e) => handleTitleChange(index, e.target.value)}
-                    className="w-full bg-transparent border-b border-foreground/10 focus:border-contrast/30 text-contrast text-sm font-bold py-1 outline-none placeholder:text-foreground/30 placeholder:font-normal font-mono"
-                  />
+                <div className="mb-4 px-8 flex items-center gap-4">
+                    <input 
+                      type="text" 
+                      placeholder="Clique em qualquer lugar para inserir texto..." 
+                      value={block.title || ""} 
+                      onMouseDown={(e) => handleTitleClick(e, index)}
+                      onChange={(e) => handleTitleChange(index, e.target.value)}
+                      style={{ fontSize: `${tabFontSize}px` }}
+                      className="flex-1 bg-transparent border-b border-foreground/10 focus:border-contrast/30 text-contrast font-bold py-1 outline-none placeholder:text-foreground/30 placeholder:font-normal font-mono"
+                    />
+                    <button onClick={(e) => {
+                      e.stopPropagation();
+                      const next = [...blocks];
+                      next.splice(index + 1, 0, { id: crypto.randomUUID(), columns: Array.from({ length: INITIAL_COLS }, () => Array(6).fill(null)), cursorPosition: 0, title: "" });
+                      setBlocks(next);
+                      setActiveBlockIndex(index + 1);
+                    }} title="Nova Parte" className="p-1.5 bg-background hover:bg-contrast rounded text-contrast flex-shrink-0 transition-colors">
+                      <ICONS.Plus width="16" height="16" />
+                    </button>
                 </div>
 
                 <TabEditor 
                   columns={block.columns} 
                   cursorPosition={block.cursorPosition} 
+                  activeStringIndex={lastStringIndex}
                   selection={activeBlockIndex === index ? selection : null}
                   onSelectionChange={setSelection}
-                  onCopy={handleCopy}
-                  onCut={handleCut}
-                  onPaste={handlePaste}
-                  onCursorMove={(pos) => { setActiveBlockIndex(index); updateActiveBlock(b => ({...b, cursorPosition: pos})); }} 
+                  onCursorMove={(pos) => updateActiveBlock(b => ({...b, cursorPosition: pos}))} 
+                  onStringSelect={setLastStringIndex}
                   fontSize={tabFontSize} 
+                  onCopy={() => {}}
+                  onCut={() => {}}
+                  onPaste={() => {}}
+                  isHovered={isHovered}
                 />
               </div>
-            ))}
-          </div>
-          
-          <button onClick={addBlockBelow} className="w-full py-3 border-2 border-dashed border-contrast/30 hover:bg-contrast/10 text-contrast hover:text-foreground rounded-xl flex items-center justify-center gap-2 transition-all font-bold text-sm">
-            <ICONS.Plus /> Adicionar Nova Parte
-          </button>
-        </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center gap-2 px-2">
-            <span className="text-sm font-bold text-foreground uppercase tracking-wider">Braço do Instrumento</span>
-            <div className="h-[1px] w-24 bg-foreground/20" />
-            {selectedScaleIndex !== -1 && (
-              <span className="text-[10px] bg-comment/20 text-comment px-2 py-0.5 rounded-full font-bold">
-                Escala Ativa: {NOTES[selectedKey]} {SCALES[selectedScaleIndex].name}
-              </span>
-            )}
-          </div>
-          <Fretboard onFretClick={(s, f) => addNote(s, f.toString())} highlightedNotes={highlightedNotes} />
-        </section>
-
-        <section className="space-y-4 bg-bgDark p-6 rounded-xl border border-foreground/10 shadow-lg">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-bold text-foreground uppercase tracking-wider">Técnicas</span>
-              <div className="flex flex-wrap gap-2">
-                {SYMBOLS.map((s) => (
-                  <button key={s.label} onClick={() => addNote(lastStringIndex, s.label)} className="w-10 h-10 flex flex-col items-center justify-center bg-background hover:bg-contrast hover:text-background text-foreground font-bold rounded-lg transition-all border border-foreground/10 shadow-sm">
-                    <span className="text-lg">{s.label}</span>
-                    <span className="text-[8px] opacity-50 uppercase">{STRING_NAMES[lastStringIndex]}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-bold text-foreground uppercase tracking-wider">Estrutura</span>
-              <div className="flex gap-2">
-                <button onClick={insertBarLine} className="w-10 h-10 flex items-center justify-center bg-background hover:bg-contrast hover:text-background text-foreground font-bold rounded-lg border border-foreground/10 transition-all shadow-sm">
-                  <span className="text-xl">|</span>
-                </button>
-                <button onClick={insertSpace} title="Mover toda essa parte pra frente (Inserir Espaço)" className="w-10 h-10 flex items-center justify-center bg-background hover:bg-contrast hover:text-background text-foreground font-bold rounded-lg border border-foreground/10 transition-all shadow-sm">
-                  <ICONS.Space width="20" height="20" />
-                </button>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3">
-               <span className="text-xs font-bold text-foreground uppercase tracking-wider">Editor Rápido</span>
-               <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => addNote(lastStringIndex, '-', false)} className="py-2 bg-background hover:bg-[#bf616a] hover:text-background text-foreground text-xs font-bold rounded border border-foreground/10 transition-all">Limpar Nota</button>
-                  <button onClick={() => updateActiveBlock(b => ({...b, cursorPosition: b.cursorPosition + 1}))} className="py-2 bg-background hover:bg-contrast hover:text-background text-foreground text-xs font-bold rounded border border-foreground/10 transition-all">Avançar Cursor</button>
-               </div>
-               <p className="text-[10px] text-foreground/60 italic uppercase tracking-tighter">PARTE {activeBlockIndex + 1}, CORDA {STRING_NAMES[lastStringIndex]}.</p>
-            </div>
-          </div>
+            );
+          })}
         </section>
       </main>
 
-      <footer className="max-w-7xl mx-auto w-full mt-auto pt-8 border-t border-foreground/10 text-center text-foreground/40 text-[10px] uppercase tracking-widest pb-8">
-        <p>&copy; 2024 Hunter Tab Maker • Shades of Purple 🪶</p>
+      {isFretboardVisible && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] w-full max-w-6xl px-4 animate-in slide-in-from-bottom-10 fade-in duration-300">
+           <div className="bg-bgDark/90 backdrop-blur-xl p-2 rounded-2xl border border-contrast/20 shadow-[0_20px_50px_rgba(0,0,0,0.5)]">
+              <div className="flex justify-end mb-1 px-2">
+                 <button onClick={() => setIsFretboardVisible(false)} className="text-foreground/40 hover:text-contrast transition-colors"><ICONS.Minimize width="12" height="12" /></button>
+              </div>
+              <Fretboard onFretClick={(s, f) => addNote(s, f.toString(), true)} highlightedNotes={highlightedNotes} />
+           </div>
+        </div>
+      )}
+
+      <button 
+        onClick={() => setIsFretboardVisible(!isFretboardVisible)}
+        className={`fixed bottom-8 right-8 z-[110] p-4 rounded-full shadow-2xl transition-all transform hover:scale-110 active:scale-95 ${isFretboardVisible ? 'bg-contrast text-background' : 'bg-highlight text-background'}`}
+      >
+        <span className="font-bold flex items-center gap-2">
+          {isFretboardVisible ? <ICONS.Minimize /> : <ICONS.Maximize />}
+          <span className="text-xs uppercase hidden md:inline">{isFretboardVisible ? 'Ocultar' : 'Braço'}</span>
+        </span>
+      </button>
+
+      <footer className="max-w-7xl mx-auto w-full mt-auto pt-8 text-center text-foreground/20 text-[9px] uppercase tracking-[0.2em]">
+        <p>Hunter Tab Maker • 2024</p>
       </footer>
     </div>
   );
